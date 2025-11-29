@@ -53,6 +53,11 @@ class _CameraScreenState extends State<CameraScreen>
 
     if (state == AppLifecycleState.inactive) {
       _cameraService.dispose();
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = false;
+        });
+      }
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
     }

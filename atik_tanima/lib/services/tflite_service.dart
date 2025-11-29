@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:camera/camera.dart';
 import 'package:image/image.dart' as img;
+import 'dart:math' as math;
 import '../models/recognition.dart';
 
 class TfliteService {
@@ -15,7 +16,9 @@ class TfliteService {
   Future<void> loadModel() async {
     try {
       // Model yükle
-      _interpreter = await Interpreter.fromAsset('assets/models/waste.tflite');
+      _interpreter = await Interpreter.fromAsset(
+        'assets/models/best_float32.tflite',
+      );
 
       // Label'ları yükle
       final labelsData = await rootBundle.loadString(
@@ -152,16 +155,61 @@ class TfliteService {
 
   List<List<List<List<double>>>>? _convertCameraImage(CameraImage image) {
     try {
-      // YUV420 formatından RGB'ye çevir - şimdilik basit placeholder
-      // Gerçek implementasyonda image_lib veya native kod kullanılmalı
-      var convertedImage = List.generate(
+      final int width = image.width;
+      final int height = image.height;
+      final int uvRowStride = image.planes[1].bytesPerRow;
+      final int uvPixelStride = image.planes[1].bytesPerPixel!;
+
+      // Basit YUV -> RGB dönüşümü ve Resize (224x224 veya 640x640)
+      // Performans için sadece merkezi alıp küçülteceğiz (basitleştirilmiş)
+      // Gerçek uygulamada image_lib veya native kod daha hızlıdır.
+
+      int inputSize = 640; // YOLO için 640
+      var convertedBytes = List.generate(
         1,
         (index) => List.generate(
-          224,
-          (y) => List.generate(224, (x) => List.generate(3, (c) => 0.0)),
+          inputSize,
+          (y) => List.generate(inputSize, (x) => List.generate(3, (c) => 0.0)),
         ),
       );
-      return convertedImage;
+
+      // Basit nearest neighbor resize
+      double scaleX = width / inputSize;
+      double scaleY = height / inputSize;
+
+      for (int y = 0; y < inputSize; y++) {
+        for (int x = 0; x < inputSize; x++) {
+          int srcX = (x * scaleX).toInt();
+          int srcY = (y * scaleY).toInt();
+
+          // YUV indexleri
+          final int uvIndex =
+              uvPixelStride * (srcX ~/ 2) + uvRowStride * (srcY ~/ 2);
+          final int index = srcY * width + srcX;
+
+          final yp = image.planes[0].bytes[index];
+          final up = image.planes[1].bytes[uvIndex];
+          final vp = image.planes[2].bytes[uvIndex];
+
+          // YUV to RGB conversion
+          int r = (yp + (1.370705 * (vp - 128))).toInt();
+          int g = (yp - (0.337633 * (up - 128)) - (0.698001 * (vp - 128)))
+              .toInt();
+          int b = (yp + (1.732446 * (up - 128))).toInt();
+
+          // Clamp
+          r = r.clamp(0, 255);
+          g = g.clamp(0, 255);
+          b = b.clamp(0, 255);
+
+          // Normalize [0, 1]
+          convertedBytes[0][y][x][0] = r / 255.0;
+          convertedBytes[0][y][x][1] = g / 255.0;
+          convertedBytes[0][y][x][2] = b / 255.0;
+        }
+      }
+
+      return convertedBytes;
     } catch (e) {
       print("❌ Kamera görüntüsü dönüştürülürken hata: $e");
       return null;
@@ -198,13 +246,119 @@ class TfliteService {
     int imageWidth,
     int imageHeight,
   ) {
-    // YOLOv8 çıktısı genelde [84, 8400] şeklindedir (transpoze gerekebilir)
-    // 84 = 4 (box) + 80 (class) (bizde 5 class -> 9 channel)
+    List<Recognition> recognitions = [];
 
-    // Basitleştirilmiş YOLO parser (gerçek model yapısına göre ayarlanmalı)
-    // Şimdilik boş dönüyoruz çünkü modelin yapısını tam bilmiyoruz
-    // Kullanıcının modeli muhtemelen classification olduğu için buraya düşmeyecek
-    return [];
+    // YOLOv8 Output Shape: [channels, anchors] -> [9, 8400]
+    // 0: x, 1: y, 2: w, 3: h, 4..8: class scores
+
+    int channels = output.length; // 9
+    int anchors = output[0].length; // 8400
+
+    print("🔍 YOLO Output Shape: [${output.length}, ${output[0].length}]");
+
+    for (int i = 0; i < anchors; i++) {
+      // En yüksek sınıf skorunu bul
+      double maxScore = 0;
+      int classIndex = -1;
+
+      for (int c = 4; c < channels; c++) {
+        double score = output[c][i];
+        if (score > maxScore) {
+          maxScore = score;
+          classIndex = c - 4;
+        }
+      }
+
+      // Threshold filtresi (%40)
+      if (maxScore > 0.40) {
+        double x = output[0][i];
+        double y = output[1][i];
+        double w = output[2][i];
+        double h = output[3][i];
+
+        if (i == 0 || i % 1000 == 0) {
+          print(
+            "📦 Detection [$i]: Score=$maxScore, Class=$classIndex, Box=($x, $y, $w, $h)",
+          );
+        }
+
+        // YOLOv8 Çıktı Kontrolü:
+        if (x > 1.0 || y > 1.0 || w > 1.0 || h > 1.0) {
+          x /= 640;
+          y /= 640;
+          w /= 640;
+          h /= 640;
+        }
+
+        // Merkez (cx, cy) koordinatlarını sol-üst (x1, y1) köşeye çevir
+        double x1 = x - w / 2;
+        double y1 = y - h / 2;
+
+        // Sınırları 0..1 arasına klipsle
+        x1 = x1.clamp(0.0, 1.0);
+        y1 = y1.clamp(0.0, 1.0);
+        w = w.clamp(0.0, 1.0);
+        h = h.clamp(0.0, 1.0);
+
+        recognitions.add(
+          Recognition(
+            id: classIndex,
+            label: classIndex < _labels.length
+                ? _labels[classIndex]
+                : 'Unknown',
+            confidence: maxScore,
+            x: x1,
+            y: y1,
+            w: w,
+            h: h,
+          ),
+        );
+      }
+    }
+
+    return _nms(recognitions);
+  }
+
+  // Non-Maximum Suppression (Çakışan kutuları temizle)
+  List<Recognition> _nms(List<Recognition> list) {
+    List<Recognition> result = [];
+    // Güvenilirliğe göre sırala (büyükten küçüğe)
+    list.sort((a, b) => b.confidence.compareTo(a.confidence));
+
+    while (list.isNotEmpty) {
+      Recognition current = list.first;
+      result.add(current);
+      list.removeAt(0);
+
+      // Çakışanları listeden sil
+      list.removeWhere((other) {
+        double iou = _calculateIoU(current, other);
+        return iou > 0.45; // %45'ten fazla çakışıyorsa sil
+      });
+    }
+    return result;
+  }
+
+  // Intersection over Union (IoU) hesapla
+  double _calculateIoU(Recognition a, Recognition b) {
+    double x1 = math.max(a.x ?? 0.0, b.x ?? 0.0);
+    double y1 = math.max(a.y ?? 0.0, b.y ?? 0.0);
+    double x2 = math.min(
+      (a.x ?? 0.0) + (a.w ?? 0.0),
+      (b.x ?? 0.0) + (b.w ?? 0.0),
+    );
+    double y2 = math.min(
+      (a.y ?? 0.0) + (a.h ?? 0.0),
+      (b.y ?? 0.0) + (b.h ?? 0.0),
+    );
+
+    if (x2 < x1 || y2 < y1) return 0.0;
+
+    double intersection = (x2 - x1) * (y2 - y1);
+    double areaA = (a.w ?? 0.0) * (a.h ?? 0.0);
+    double areaB = (b.w ?? 0.0) * (b.h ?? 0.0);
+
+    return intersection / (areaA + areaB - intersection);
   }
 
   void dispose() {

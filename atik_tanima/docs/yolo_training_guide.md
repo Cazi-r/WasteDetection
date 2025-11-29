@@ -96,6 +96,42 @@ model.export(format='tflite')
 
 Bu işlem sonucunda `best_saved_model/best_float32.tflite` gibi bir dosya oluşacak. Bu dosyayı indirip bana getireceksiniz!
 
+---
+
+## Alternatif: Kendi Bilgisayarınızda Eğitim (Local Training)
+
+Eğer bilgisayarınızda güçlü bir ekran kartı (NVIDIA GPU) varsa, Colab yerine kendi bilgisayarınızda da eğitebilirsiniz.
+
+### 1. Hazırlık
+
+1.  Bilgisayarınızda **Python** yüklü olmalı.
+2.  Terminali açıp şu komutu yazın:
+    ```bash
+    pip install ultralytics
+    ```
+
+### 2. Veriyi İndirme
+
+1.  Roboflow'da "Export Dataset" kısmında **"Download zip to computer"** seçeneğini seçin.
+2.  İnen zip dosyasını bir klasöre çıkartın (örn: `C:\atik_veri`).
+
+### 3. Eğitimi Başlatma
+
+1.  Terminali açın ve veriyi çıkardığınız klasöre gidin.
+2.  Şu komutu çalıştırın:
+    ```bash
+    yolo task=detect mode=train model=yolov8n.pt data=data.yaml epochs=50 imgsz=640
+    ```
+3.  Eğitim bitince `runs/detect/train/weights/best.pt` dosyasını alıp aşağıdaki dönüştürme işlemini yapın.
+
+### 4. TFLite Dönüştürme (Local)
+
+```bash
+yolo export model=runs/detect/train/weights/best.pt format=tflite
+```
+
+---
+
 ## 3. Adım: Uygulamaya Entegrasyon
 
 1.  İndirdiğiniz `.tflite` dosyasını projenin `assets/models/` klasörüne atın.

@@ -45,11 +45,16 @@ class BoundingBoxPainter extends CustomPainter {
     for (var recognition in recognitions) {
       paint.color = _getCategoryColor(recognition.label);
 
-      // Koordinatları hesapla
-      final double left = offsetX + (recognition.x! * imageWidth);
-      final double top = offsetY + (recognition.y! * imageHeight);
-      final double width = recognition.w! * imageWidth;
-      final double height = recognition.h! * imageHeight;
+      // Koordinatları hesapla (Null safety: değer yoksa 0.0 al)
+      final double rX = recognition.x ?? 0.0;
+      final double rY = recognition.y ?? 0.0;
+      final double rW = recognition.w ?? 0.0;
+      final double rH = recognition.h ?? 0.0;
+
+      final double left = offsetX + (rX * imageWidth);
+      final double top = offsetY + (rY * imageHeight);
+      final double width = rW * imageWidth;
+      final double height = rH * imageHeight;
 
       final Rect rect = Rect.fromLTWH(left, top, width, height);
 
@@ -73,8 +78,10 @@ class BoundingBoxPainter extends CustomPainter {
       for (var other in recognitions) {
         if (other == recognition) break;
         // Eğer koordinatlar çok yakınsa (aynı nesne veya classification sonucu)
-        if ((other.x! - recognition.x!).abs() < 0.01 &&
-            (other.y! - recognition.y!).abs() < 0.01) {
+        final double oX = other.x ?? 0.0;
+        final double oY = other.y ?? 0.0;
+
+        if ((oX - rX).abs() < 0.01 && (oY - rY).abs() < 0.01) {
           stackIndex++;
         }
       }
