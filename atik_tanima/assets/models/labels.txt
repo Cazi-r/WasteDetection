@@ -1,0 +1,8 @@
+# Waste Classification Labels
+# 5 Ana Kategori
+
+0: Plastik
+1: Kağıt
+2: Cam
+3: Metal
+4: Organik
