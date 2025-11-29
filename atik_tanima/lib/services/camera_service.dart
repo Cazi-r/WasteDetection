@@ -7,17 +7,37 @@ class CameraService {
 
   CameraController? get controller => _controller;
 
+  int _currentCameraIndex = 0;
+
   Future<void> initialize() async {
     _cameras = await availableCameras();
     if (_cameras != null && _cameras!.isNotEmpty) {
       _controller = CameraController(
-        _cameras![0],
+        _cameras![_currentCameraIndex],
         ResolutionPreset.medium, // High yerine medium - emülatörde daha stabil
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420, // Buffer yönetimi için
       );
       await _controller!.initialize();
     }
+  }
+
+  Future<void> switchCamera() async {
+    if (_cameras == null || _cameras!.isEmpty) return;
+
+    await stopImageStream();
+    await _controller?.dispose();
+
+    _currentCameraIndex = (_currentCameraIndex + 1) % _cameras!.length;
+
+    _controller = CameraController(
+      _cameras![_currentCameraIndex],
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.yuv420,
+    );
+
+    await _controller!.initialize();
   }
 
   Future<void> startImageStream(Function(CameraImage) onLatestImage) async {

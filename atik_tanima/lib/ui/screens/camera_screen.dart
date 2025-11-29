@@ -39,7 +39,6 @@ class _CameraScreenState extends State<CameraScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
-    _startContinuousDetection();
   }
 
   @override
@@ -73,60 +72,48 @@ class _CameraScreenState extends State<CameraScreen>
         // Kamera önizleme boyutlarını al
         if (_cameraService.controller != null &&
             _cameraService.controller!.value.isInitialized) {
-          _previewWidth = _cameraService
-              .controller!
-              .value
-              .previewSize!
-              .height; // Dikey modda ters
+          _previewWidth = _cameraService.controller!.value.previewSize!.height;
           _previewHeight = _cameraService.controller!.value.previewSize!.width;
+
+          // Canlı tespiti başlat
+          if (_isLiveMode) {
+            _startLiveDetection();
+          }
         }
       });
     }
   }
 
-  // Sürekli tespit simülasyonu (ML model entegre olunca gerçek olacak)
-  void _startContinuousDetection() {
-    if (!_isLiveMode) return;
+  int _lastRunTime = 0;
 
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted && _isLiveMode) {
-        // Mock detection - ML model buraya entegre edilecek
-        _simulateDetection();
-        _startContinuousDetection(); // Döngü
+  void _startLiveDetection() {
+    if (_cameraService.controller == null ||
+        !_cameraService.controller!.value.isInitialized ||
+        _isDetecting)
+      return;
+
+    _cameraService.startImageStream((CameraImage image) async {
+      if (_isDetecting || !_isLiveMode) return;
+
+      int currentTime = DateTime.now().millisecondsSinceEpoch;
+      // 100ms'de bir çalıştır (yaklaşık 10 FPS) - Performans için
+      if (currentTime - _lastRunTime < 100) return;
+
+      _lastRunTime = currentTime;
+      _isDetecting = true;
+      try {
+        final recognitions = await _tfliteService.runModelOnFrame(image);
+        if (mounted && _isLiveMode) {
+          setState(() {
+            _recognitions = recognitions;
+          });
+        }
+      } catch (e) {
+        print("Error processing frame: $e");
+      } finally {
+        _isDetecting = false;
       }
     });
-  }
-
-  void _simulateDetection() {
-    // Mock data - gerçek ML model sonuçları buraya gelecek
-    final mockResults = [
-      {'type': 'Plastik Şişe', 'confidence': 0.92, 'category': 'Plastik'},
-      {'type': 'Kağıt Kutu', 'confidence': 0.87, 'category': 'Kağıt'},
-      {'type': 'Cam Şişe', 'confidence': 0.95, 'category': 'Cam'},
-      null, // Tespit yok
-    ];
-
-    final result = (mockResults..shuffle()).first;
-
-    if (mounted) {
-      setState(() {
-        if (result != null) {
-          _recognitions = [
-            Recognition(
-              id: 0,
-              label: result['type'] as String,
-              confidence: result['confidence'] as double,
-              x: 0.2,
-              y: 0.3,
-              w: 0.4,
-              h: 0.4, // Mock box
-            ),
-          ];
-        } else {
-          _recognitions = [];
-        }
-      });
-    }
   }
 
   Future<void> _pickImage() async {
@@ -195,6 +182,31 @@ class _CameraScreenState extends State<CameraScreen>
     }
   }
 
+  Future<void> _switchCamera() async {
+    setState(() {
+      _isDetecting = true; // Stop processing frames
+    });
+
+    await _cameraService.switchCamera();
+
+    if (mounted) {
+      setState(() {
+        // Update preview size
+        if (_cameraService.controller != null &&
+            _cameraService.controller!.value.isInitialized) {
+          _previewWidth = _cameraService.controller!.value.previewSize!.height;
+          _previewHeight = _cameraService.controller!.value.previewSize!.width;
+        }
+        _isDetecting = false;
+      });
+
+      // Restart live detection if needed
+      if (_isLiveMode) {
+        _startLiveDetection();
+      }
+    }
+  }
+
   void _switchToLiveMode() {
     setState(() {
       _isLiveMode = true;
@@ -204,9 +216,8 @@ class _CameraScreenState extends State<CameraScreen>
     });
     // Kamera stream'ini tekrar başlat
     if (_isCameraInitialized) {
-      _cameraService.startImageStream((image) {});
+      _startLiveDetection();
     }
-    _startContinuousDetection();
   }
 
   Future<void> _saveDetection() async {
@@ -334,6 +345,19 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
           ),
+
+          // Kamera Değiştirme Butonu (Sağ Üst)
+          if (_isLiveMode)
+            Positioned(
+              top: 0,
+              right: 0,
+              child: SafeArea(
+                child: IconButton(
+                  icon: const Icon(Icons.flip_camera_ios, color: Colors.white),
+                  onPressed: _switchCamera,
+                ),
+              ),
+            ),
 
           // Alt kısım - Mod değiştirme
           Positioned(
