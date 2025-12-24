@@ -9,6 +9,15 @@ import '../../models/history_item.dart';
 import '../../models/recognition.dart';
 import '../widgets/bounding_box_painter.dart';
 
+/// Kamera modları
+enum CameraMode {
+  /// Canlı tespit - gerçek zamanlı bounding box
+  live,
+
+  /// Fotoğraf/Galeri - önce çek veya seç, sonra tespit
+  photoGallery,
+}
+
 class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
 
@@ -23,8 +32,10 @@ class _CameraScreenState extends State<CameraScreen>
   final TfliteService _tfliteService = TfliteService();
 
   bool _isCameraInitialized = false;
-  bool _isLiveMode = true;
+  CameraMode _currentMode =
+      CameraMode.photoGallery; // Varsayılan: Fotoğraf modu
   File? _selectedImage;
+  bool _isPickingImage = false;
 
   // Tespit sonuçları
   List<Recognition> _recognitions = [];
@@ -45,7 +56,6 @@ class _CameraScreenState extends State<CameraScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final CameraController? cameraController = _cameraService.controller;
 
-    // App state changed before we got the chance to initialize.
     if (cameraController == null || !cameraController.value.isInitialized) {
       return;
     }
@@ -64,19 +74,18 @@ class _CameraScreenState extends State<CameraScreen>
 
   Future<void> _initializeCamera() async {
     await _cameraService.initialize();
-    // ML modelini yükle
     await _tfliteService.loadModel();
+
     if (mounted) {
       setState(() {
         _isCameraInitialized = true;
-        // Kamera önizleme boyutlarını al
         if (_cameraService.controller != null &&
             _cameraService.controller!.value.isInitialized) {
           _previewWidth = _cameraService.controller!.value.previewSize!.height;
           _previewHeight = _cameraService.controller!.value.previewSize!.width;
 
-          // Canlı tespiti başlat
-          if (_isLiveMode) {
+          // Canlı modda başlat
+          if (_currentMode == CameraMode.live) {
             _startLiveDetection();
           }
         }
@@ -89,21 +98,21 @@ class _CameraScreenState extends State<CameraScreen>
   void _startLiveDetection() {
     if (_cameraService.controller == null ||
         !_cameraService.controller!.value.isInitialized ||
-        _isDetecting)
+        _isDetecting) {
       return;
+    }
 
     _cameraService.startImageStream((CameraImage image) async {
-      if (_isDetecting || !_isLiveMode) return;
+      if (_isDetecting || _currentMode != CameraMode.live) return;
 
       int currentTime = DateTime.now().millisecondsSinceEpoch;
-      // 100ms'de bir çalıştır (yaklaşık 10 FPS) - Performans için
       if (currentTime - _lastRunTime < 100) return;
 
       _lastRunTime = currentTime;
       _isDetecting = true;
       try {
         final recognitions = await _tfliteService.runModelOnFrame(image);
-        if (mounted && _isLiveMode) {
+        if (mounted && _currentMode == CameraMode.live) {
           setState(() {
             _recognitions = recognitions;
           });
@@ -116,48 +125,104 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  Future<void> _pickImage() async {
-    // Kamera stream'ini durdur ve biraz bekle
-    if (_isCameraInitialized) {
+  void _stopLiveDetection() async {
+    await _cameraService.stopImageStream();
+    if (mounted) {
+      setState(() {
+        _recognitions = [];
+      });
+    }
+  }
+
+  /// Modu değiştir
+  void _switchMode(CameraMode mode) async {
+    if (_currentMode == mode) return;
+
+    // Önceki modun temizliği
+    if (_currentMode == CameraMode.live) {
       await _cameraService.stopImageStream();
-      await Future.delayed(
-        const Duration(milliseconds: 200),
-      ); // Buffer temizlenmesi için bekle
     }
 
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
+    setState(() {
+      _currentMode = mode;
+      _selectedImage = null;
+      _recognitions = [];
+    });
+
+    // Yeni mod başlatma
+    if (mode == CameraMode.live && _isCameraInitialized) {
+      _startLiveDetection();
+    }
+  }
+
+  /// Fotoğraf çek
+  Future<void> _takePhoto() async {
+    if (!_isCameraInitialized || _cameraService.controller == null) return;
+
+    try {
       setState(() {
-        _selectedImage = File(image.path);
-        _isLiveMode = false;
+        _isDetecting = true;
       });
-      // Galeri resminde de tespit yap
-      _detectOnImage();
-    } else {
-      // Resim seçilmediyse kamerayı tekrar başlat
-      if (_isCameraInitialized) {
-        await _cameraService.startImageStream((image) {});
+
+      final XFile photo = await _cameraService.controller!.takePicture();
+
+      setState(() {
+        _selectedImage = File(photo.path);
+      });
+
+      // Fotoğraf üzerinde tespit yap
+      await _detectOnImage();
+    } catch (e) {
+      print("Fotoğraf çekme hatası: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Fotoğraf çekme hatası: $e')));
+        setState(() {
+          _isDetecting = false;
+        });
       }
     }
   }
 
+  /// Galeriden resim seç
+  Future<void> _pickImage() async {
+    if (_isPickingImage) return;
+    _isPickingImage = true;
+
+    try {
+      if (_isCameraInitialized && _currentMode == CameraMode.live) {
+        await _cameraService.stopImageStream();
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+
+      final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+      if (image != null) {
+        setState(() {
+          _selectedImage = File(image.path);
+        });
+        await _detectOnImage();
+      }
+    } finally {
+      _isPickingImage = false;
+    }
+  }
+
+  /// Seçili resim üzerinde tespit yap
   Future<void> _detectOnImage() async {
     if (_selectedImage == null) return;
 
     setState(() {
       _isDetecting = true;
-      // Tespit başlarken önceki sonuçları temizle
       _recognitions = [];
     });
 
     try {
-      // Gerçek ML model ile tespit yap
       final recognitions = await _tfliteService.runModelOnImage(
         _selectedImage!,
       );
 
       if (mounted) {
-        // Resim boyutlarını al (oranlama için)
         final decodedImage = await decodeImageFromList(
           _selectedImage!.readAsBytesSync(),
         );
@@ -182,16 +247,16 @@ class _CameraScreenState extends State<CameraScreen>
     }
   }
 
+  /// Kamerayı değiştir
   Future<void> _switchCamera() async {
     setState(() {
-      _isDetecting = true; // Stop processing frames
+      _isDetecting = true;
     });
 
     await _cameraService.switchCamera();
 
     if (mounted) {
       setState(() {
-        // Update preview size
         if (_cameraService.controller != null &&
             _cameraService.controller!.value.isInitialized) {
           _previewWidth = _cameraService.controller!.value.previewSize!.height;
@@ -200,30 +265,24 @@ class _CameraScreenState extends State<CameraScreen>
         _isDetecting = false;
       });
 
-      // Restart live detection if needed
-      if (_isLiveMode) {
+      if (_currentMode == CameraMode.live) {
         _startLiveDetection();
       }
     }
   }
 
-  void _switchToLiveMode() {
+  /// Kameraya geri dön (fotoğraf çekildikten sonra)
+  void _backToCamera() {
     setState(() {
-      _isLiveMode = true;
       _selectedImage = null;
-      // Mod değiştiğinde tespiti sıfırla
       _recognitions = [];
     });
-    // Kamera stream'ini tekrar başlat
-    if (_isCameraInitialized) {
-      _startLiveDetection();
-    }
   }
 
+  /// Tespiti kaydet
   Future<void> _saveDetection() async {
     if (_recognitions.isEmpty) return;
 
-    // En yüksek güvenilirlikli olanı kaydet (veya hepsi için döngü yapılabilir)
     final topResult = _recognitions.first;
 
     final item = HistoryItem(
@@ -232,8 +291,7 @@ class _CameraScreenState extends State<CameraScreen>
       imagePath: _selectedImage?.path ?? '',
       confidence: topResult.confidence,
       timestamp: DateTime.now(),
-      category:
-          topResult.label, // Kategori ile label aynı varsayıyoruz şimdilik
+      category: topResult.label,
     );
 
     await HistoryService.addHistory(item);
@@ -262,23 +320,8 @@ class _CameraScreenState extends State<CameraScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // Kamera görüntüsü (tam ekran)
-          Positioned.fill(
-            child: _isLiveMode
-                ? (_isCameraInitialized
-                      ? CameraPreview(_cameraService.controller!)
-                      : const Center(
-                          child: CircularProgressIndicator(color: Colors.white),
-                        ))
-                : (_selectedImage != null
-                      ? Image.file(_selectedImage!, fit: BoxFit.contain)
-                      : const Center(
-                          child: Text(
-                            "Resim seçilmedi",
-                            style: TextStyle(color: Colors.white),
-                          ),
-                        )),
-          ),
+          // Ana içerik
+          Positioned.fill(child: _buildMainContent()),
 
           // Bounding Box Çizimi
           if (_recognitions.isNotEmpty)
@@ -292,7 +335,7 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // Üst kısım - Tespit bilgisi kartı (Sadece en iyi sonuç için veya özet)
+          // Üst bilgi kartı
           if (_recognitions.isNotEmpty)
             Positioned(
               top: 0,
@@ -346,8 +389,10 @@ class _CameraScreenState extends State<CameraScreen>
             ),
           ),
 
-          // Kamera Değiştirme Butonu (Sağ Üst)
-          if (_isLiveMode)
+          // Kamera değiştirme butonu
+          if (_currentMode == CameraMode.live ||
+              (_currentMode == CameraMode.photoGallery &&
+                  _selectedImage == null))
             Positioned(
               top: 0,
               right: 0,
@@ -359,40 +404,12 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
 
-          // Alt kısım - Mod değiştirme
+          // Alt kontroller
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
-                ),
-              ),
-              padding: const EdgeInsets.all(20),
-              child: SafeArea(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildModeButton(
-                      icon: Icons.camera_alt,
-                      label: 'Kamera',
-                      isActive: _isLiveMode,
-                      onTap: _switchToLiveMode,
-                    ),
-                    _buildModeButton(
-                      icon: Icons.photo_library,
-                      label: 'Galeri',
-                      isActive: !_isLiveMode,
-                      onTap: _pickImage,
-                    ),
-                  ],
-                ),
-              ),
-            ),
+            child: _buildBottomControls(),
           ),
 
           // Yükleniyor göstergesi
@@ -406,6 +423,111 @@ class _CameraScreenState extends State<CameraScreen>
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMainContent() {
+    // Eğer fotoğraf seçilmişse göster
+    if (_selectedImage != null) {
+      return Image.file(_selectedImage!, fit: BoxFit.contain);
+    }
+
+    // Kamera önizlemesi
+    if (_isCameraInitialized && _cameraService.controller != null) {
+      return CameraPreview(_cameraService.controller!);
+    }
+
+    return const Center(child: CircularProgressIndicator(color: Colors.white));
+  }
+
+  Widget _buildBottomControls() {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
+        ),
+      ),
+      padding: const EdgeInsets.all(20),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Fotoğraf modunda ve fotoğraf seçilmemişse: çek/galeri butonları
+            if (_currentMode == CameraMode.photoGallery &&
+                _selectedImage == null)
+              _buildPhotoModeActions(),
+
+            // Fotoğraf seçildikten sonra: geri butonu
+            if (_selectedImage != null) _buildImageSelectedActions(),
+
+            const SizedBox(height: 16),
+
+            // Mod seçim butonları
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildModeButton(
+                  icon: Icons.camera_alt,
+                  label: 'Fotoğraf',
+                  isActive: _currentMode == CameraMode.photoGallery,
+                  onTap: () => _switchMode(CameraMode.photoGallery),
+                ),
+                _buildModeButton(
+                  icon: Icons.videocam,
+                  label: 'Canlı',
+                  isActive: _currentMode == CameraMode.live,
+                  onTap: () => _switchMode(CameraMode.live),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPhotoModeActions() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          // Galeri butonu
+          FloatingActionButton(
+            heroTag: 'gallery',
+            onPressed: _pickImage,
+            backgroundColor: Colors.white24,
+            child: const Icon(Icons.photo_library, color: Colors.white),
+          ),
+          // Fotoğraf çek butonu (büyük)
+          FloatingActionButton.large(
+            heroTag: 'capture',
+            onPressed: _takePhoto,
+            backgroundColor: Colors.white,
+            child: const Icon(Icons.camera, color: Colors.black, size: 36),
+          ),
+          // Boşluk için placeholder
+          const SizedBox(width: 56),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageSelectedActions() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: ElevatedButton.icon(
+        onPressed: _backToCamera,
+        icon: const Icon(Icons.refresh),
+        label: const Text('Yeni Fotoğraf'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.teal,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        ),
       ),
     );
   }

@@ -130,7 +130,34 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   height: 80,
                   color: Colors.grey.shade200,
                   child: item.imagePath.isNotEmpty
-                      ? Image.file(File(item.imagePath), fit: BoxFit.cover)
+                      ? Image.file(
+                          File(item.imagePath),
+                          fit: BoxFit.cover,
+                          cacheWidth: 160, // Küçük boyutta cache'le
+                          cacheHeight: 160,
+                          frameBuilder:
+                              (context, child, frame, wasSynchronouslyLoaded) {
+                                if (wasSynchronouslyLoaded) return child;
+                                return frame != null
+                                    ? child
+                                    : const Center(
+                                        child: SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                      );
+                              },
+                          errorBuilder: (context, error, stackTrace) {
+                            return Icon(
+                              Icons.broken_image,
+                              size: 40,
+                              color: Colors.grey.shade400,
+                            );
+                          },
+                        )
                       : Icon(
                           Icons.image,
                           size: 40,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'core/routes/app_routes.dart';
 import 'services/preferences_service.dart';
 import 'services/history_service.dart';
@@ -17,6 +18,9 @@ void main() async {
   // Initialize services
   await PreferencesService.init();
   await HistoryService.init();
+
+  // Initialize Turkish date formatting
+  await initializeDateFormatting('tr_TR', null);
 
   runApp(const MyApp());
 }

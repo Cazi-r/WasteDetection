@@ -1,5 +1,5 @@
 cam
 kagit
 metal
-organik
+pil
 plastik
