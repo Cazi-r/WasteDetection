@@ -74,7 +74,12 @@ class _CameraScreenState extends State<CameraScreen>
 
   Future<void> _initializeCamera() async {
     await _cameraService.initialize();
-    await _tfliteService.loadModel();
+
+    // Moda göre model yükle
+    final modelType = _currentMode == CameraMode.live
+        ? ModelType.float16
+        : ModelType.float32;
+    await _tfliteService.loadModel(type: modelType);
 
     if (mounted) {
       setState(() {
@@ -125,15 +130,6 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  void _stopLiveDetection() async {
-    await _cameraService.stopImageStream();
-    if (mounted) {
-      setState(() {
-        _recognitions = [];
-      });
-    }
-  }
-
   /// Modu değiştir
   void _switchMode(CameraMode mode) async {
     if (_currentMode == mode) return;
@@ -148,6 +144,12 @@ class _CameraScreenState extends State<CameraScreen>
       _selectedImage = null;
       _recognitions = [];
     });
+
+    // Moda göre model değiştir
+    final modelType = mode == CameraMode.live
+        ? ModelType.float16
+        : ModelType.float32;
+    await _tfliteService.switchModel(modelType);
 
     // Yeni mod başlatma
     if (mode == CameraMode.live && _isCameraInitialized) {

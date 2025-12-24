@@ -6,37 +6,73 @@ import 'package:image/image.dart' as img;
 import 'dart:math' as math;
 import '../models/recognition.dart';
 
+/// Model türleri
+enum ModelType {
+  /// Fotoğraf/Galeri için: daha hassas, daha yavaş
+  float32,
+
+  /// Canlı mod için: daha hızlı, daha az hassas
+  float16,
+}
+
 class TfliteService {
   Interpreter? _interpreter;
   List<String> _labels = [];
   bool _isModelLoaded = false;
+  ModelType? _currentModelType;
 
   bool get isModelLoaded => _isModelLoaded;
+  ModelType? get currentModelType => _currentModelType;
 
-  Future<void> loadModel() async {
+  /// Model yükle - varsayılan float32
+  Future<void> loadModel({ModelType type = ModelType.float32}) async {
+    // Aynı model zaten yüklüyse tekrar yükleme
+    if (_isModelLoaded && _currentModelType == type) {
+      print("ℹ️ ${type.name} modeli zaten yüklü");
+      return;
+    }
+
+    // Önceki modeli kapat
+    _interpreter?.close();
+    _isModelLoaded = false;
+
     try {
+      // Model dosyasını seç
+      // big = büyük model (fotoğraf/galeri için, daha hassas)
+      // small = küçük model (canlı mod için, daha hızlı)
+      final modelPath = type == ModelType.float32
+          ? 'assets/models/big/best_float32.tflite'
+          : 'assets/models/small/best_float32.tflite';
+
       // Model yükle
-      _interpreter = await Interpreter.fromAsset(
-        'assets/models/best_float32.tflite',
-      );
+      _interpreter = await Interpreter.fromAsset(modelPath);
 
-      // Label'ları yükle
-      final labelsData = await rootBundle.loadString(
-        'assets/models/labels.txt',
-      );
-      _labels = labelsData
-          .split('\n')
-          .where((label) => label.trim().isNotEmpty && !label.startsWith('#'))
-          .map((line) => line.split(':').last.trim())
-          .toList();
+      // Label'ları yükle (sadece ilk seferde)
+      if (_labels.isEmpty) {
+        final labelsData = await rootBundle.loadString(
+          'assets/models/labels.txt',
+        );
+        _labels = labelsData
+            .split('\n')
+            .where((label) => label.trim().isNotEmpty && !label.startsWith('#'))
+            .map((line) => line.split(':').last.trim())
+            .toList();
+      }
 
+      _currentModelType = type;
       _isModelLoaded = true;
-      print("✅ Model başarıyla yüklendi");
+      print("✅ ${type.name} modeli başarıyla yüklendi");
       print("📋 Kategoriler: ${_labels.join(', ')}");
     } catch (e) {
       print("❌ Model yüklenirken hata: $e");
       _isModelLoaded = false;
+      _currentModelType = null;
     }
+  }
+
+  /// Farklı bir modele geç
+  Future<void> switchModel(ModelType type) async {
+    await loadModel(type: type);
   }
 
   Future<List<Recognition>> runModelOnFrame(CameraImage image) async {
