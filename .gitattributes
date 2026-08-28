@@ -1,0 +1,10 @@
+# GitHub'ın dil istatistiğinde Flutter'ın platform iskeleti sayılmasın.
+android/**   linguist-vendored
+ios/**       linguist-vendored
+linux/**     linguist-vendored
+macos/**     linguist-vendored
+windows/**   linguist-vendored
+web/**       linguist-vendored
+
+# Model dosyaları diff'lenmesin
+*.tflite     binary
